@@ -144,7 +144,10 @@ def start_dummy_analysis_endpoint():
     task_id = str(uuid.uuid4())
     
     # Prepare the dummy HTML file by copying it to the output directory
+    # AND read its content to be served directly.
     dummy_html_path_in_output = os.path.join(NLP_OUTPUT_DIR, DUMMY_HTML_FILENAME)
+    html_content_for_response = None
+
     try:
         # Ensure NLP_OUTPUT_DIR exists
         if not os.path.exists(NLP_OUTPUT_DIR):
@@ -152,24 +155,30 @@ def start_dummy_analysis_endpoint():
             app.logger.info(f"Created NLP_OUTPUT_DIR at {NLP_OUTPUT_DIR} for dummy task.")
 
         if os.path.exists(USER_STATIC_HTML_SOURCE):
+            # Read the HTML content
+            with open(USER_STATIC_HTML_SOURCE, 'r', encoding='utf-8') as f:
+                html_content_for_response = f.read()
+            
+            # Copying the file can still be useful for direct access/debugging, but not primary for API response
             shutil.copyfile(USER_STATIC_HTML_SOURCE, dummy_html_path_in_output)
-            app.logger.info(f"Copied '{USER_STATIC_HTML_SOURCE}' to '{dummy_html_path_in_output}' for task {task_id}")
+            app.logger.info(f"Copied '{USER_STATIC_HTML_SOURCE}' to '{dummy_html_path_in_output}' and read its content for task {task_id}")
             
             tasks[task_id] = {
                 "status": "completed",
-                "result_filename": DUMMY_HTML_FILENAME,
+                # "result_filename": DUMMY_HTML_FILENAME, # Keep for consistency or if direct file serving is still a fallback
+                "html_content": html_content_for_response, #<<< Store actual HTML content
                 "error": None,
-                "message": "虚拟分析任务已立即完成。",
-                "task_id": task_id # Include task_id for consistency with status endpoint
+                "message": "虚拟分析任务已完成，HTML内容已准备就绪。",
+                "task_id": task_id
             }
-            app.logger.info(f"Created and completed dummy task {task_id} using {DUMMY_HTML_FILENAME}")
-            return jsonify({"task_id": task_id, "message": "虚拟分析任务已创建并立即完成。"}), 202 # Accepted
+            app.logger.info(f"Created and completed dummy task {task_id} with direct HTML content.")
+            return jsonify({"task_id": task_id, "message": "虚拟分析任务已创建并立即完成，HTML内容已直接准备好。"}), 202
         else:
             app.logger.error(f"Source HTML file for dummy task not found: {USER_STATIC_HTML_SOURCE}")
-            # Still create a task, but mark as failed or indicate issue
             tasks[task_id] = {
                 "status": "failed", 
                 "result_filename": None, 
+                "html_content": None,
                 "error": f"源HTML文件 '{USER_STATIC_HTML_SOURCE}' 未找到。",
                 "message": "创建虚拟任务失败：源文件丢失。",
                 "task_id": task_id
@@ -181,6 +190,7 @@ def start_dummy_analysis_endpoint():
         tasks[task_id] = {
             "status": "failed", 
             "result_filename": None, 
+            "html_content": None,
             "error": str(e), 
             "message": f"创建虚拟任务时出错: {str(e)}",
             "task_id": task_id
@@ -199,8 +209,13 @@ def analysis_status_endpoint(task_id):
         "status": task["status"], 
         "message": task.get("message", "")
     }
-    if task["status"] == "completed" and task.get("result_filename"):
-        response["html_url"] = f"/outputs/{task['result_filename']}"
+    if task["status"] == "completed":
+        if task.get("html_content"):
+            response["html_content"] = task["html_content"]
+        # Fallback or alternative for real analysis tasks if they still use result_filename
+        elif task.get("result_filename"): 
+            response["html_url"] = f"/outputs/{task['result_filename']}"
+            
     elif task["status"] == "failed":
         response["error_details"] = task.get("error")
         

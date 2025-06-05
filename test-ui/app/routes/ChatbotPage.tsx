@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import OpenAI from 'openai'; // Added OpenAI import
 
 const BACKEND_URL = 'http://localhost:5001'; // Flask backend URL
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com";
@@ -14,26 +15,39 @@ interface TaskStatusResponse {
   status: BackendTaskActualStatus; // Correctly typed based on what backend sends
   message: string;
   html_url?: string;
+  html_content?: string; // Added for direct HTML content
   error_details?: string;
 }
+
+// Placeholder for DeepSeek API Key - IMPORTANT: Manage this securely!
+// This key will be exposed in the browser. For production, consider a backend proxy.
+const DUMMY_DEEPSEEK_API_KEY = 'sk-c9f6472191e04f628039a6e3643f6ff1'; // TODO: Replace with your actual key or manage securely
 
 export default function ChatbotPage() {
   const [analysisStatus, setAnalysisStatus] = useState<FrontendAnalysisStatus>('idle');
   const [taskId, setTaskId] = useState<string | null>(null);
   const [analysisResultUrl, setAnalysisResultUrl] = useState<string | null>(null);
+  const [htmlReportContent, setHtmlReportContent] = useState<string | null>(null); // State for HTML content
   const [statusMessage, setStatusMessage] = useState<string>('点击按钮开始分析文档。');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // --- Chat state (placeholders for now) ---
-  const [chatMessages, setChatMessages] = useState<{ sender: string, text: string }[]>([]);
+  // --- Chat state ---
+  const [chatMessages, setChatMessages] = useState<{ id: string, sender: string, text: string }[]>([]);
   const [userInput, setUserInput] = useState('');
   const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  const openai = new OpenAI({
+    apiKey: DUMMY_DEEPSEEK_API_KEY,
+    baseURL: DEEPSEEK_ENDPOINT,
+    dangerouslyAllowBrowser: true,
+  });
 
   const handleStartAnalysis = async () => {
     setAnalysisStatus('loading');
     setStatusMessage('正在请求开始分析...');
     setErrorMessage(null);
-    setAnalysisResultUrl(null); // Clear previous results
+    setAnalysisResultUrl(null); // Clear previous URL result
+    setHtmlReportContent(null); // Clear previous HTML content result
 
     console.log("Starting analysis...");
 
@@ -76,9 +90,19 @@ export default function ChatbotPage() {
           setStatusMessage(data.message || '正在获取状态...');
 
           if (data.status === 'completed') {
+            if (data.html_content) {
+              setHtmlReportContent(data.html_content);
+              setAnalysisResultUrl(null);
+              setStatusMessage(data.message || '分析成功完成，报告内容已加载！');
+            } else if (data.html_url) {
+              setAnalysisResultUrl(data.html_url ? `${BACKEND_URL}${data.html_url}` : null);
+              setHtmlReportContent(null);
+              setStatusMessage(data.message || '分析成功完成，报告链接已获取！');
+            } else {
+              // Handle case where neither is provided, though backend logic should ensure one for completed tasks
+              setStatusMessage(data.message || '分析成功完成，但未找到报告输出。');
+            }
             setAnalysisStatus('success');
-            setAnalysisResultUrl(data.html_url ? `${BACKEND_URL}${data.html_url}` : null);
-            setStatusMessage(data.message || '分析成功完成！');
             setTaskId(null); // Clear task ID as it's done
             clearInterval(intervalId);
           } else if (data.status === 'failed') {
@@ -115,33 +139,87 @@ export default function ChatbotPage() {
 
   const handleSendMessage = async () => {
     if (!userInput.trim()) return;
-    const newUserMessage = { sender: 'user', text: userInput };
-    setChatMessages(prevMessages => [...prevMessages, newUserMessage]);
-    const currentInput = userInput;
-    setUserInput('');
-    setStatusMessage('正在发送消息至大模型...');
 
-    try {
-        const response = await fetch(`${BACKEND_URL}/api/chat`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ message: currentInput, context: analysisResultUrl /* or other context */ }),
+    const currentUserInput = userInput; 
+    const newUserMessage = { id: `user-${Date.now()}`, sender: 'user', text: currentUserInput };
+    setChatMessages(prevMessages => [...prevMessages, newUserMessage]);
+    setUserInput('');
+    setStatusMessage('正在向大模型发送消息...');
+    setErrorMessage(null);
+
+    const apiMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
+
+    // Updated system prompt logic
+    if (htmlReportContent) {
+      apiMessages.push({
+        role: 'system',
+        content: 'You are an AI assistant. The user is viewing an HTML analysis report directly within their interface. Please answer their questions based on this document context that they are seeing. If a question seems unrelated to the document, use your general knowledge. Keep responses helpful and concise. The actual HTML content is: ' + htmlReportContent
+      });
+    } else if (analysisResultUrl) {
+      apiMessages.push({
+        role: 'system',
+        content: `You are an AI assistant. The user has analyzed a document, and the analysis report is available at: ${analysisResultUrl}. Please answer questions based on this document. If the question seems unrelated to the document, use your general knowledge. Keep responses helpful and concise.`
+      });
+    }
+
+    // Add recent chat history (up to last 6 messages, excluding any empty bot placeholders during generation)
+    chatMessages.filter(msg => msg.text.trim() !== '').slice(-6).forEach(msg => {
+      if (msg.sender === 'user') {
+        apiMessages.push({
+          role: 'user',
+          content: msg.text
         });
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.error || errorData.reply || `HTTP error! status: ${response.status}`);
+      } else if (msg.sender === 'bot') { 
+        apiMessages.push({
+          role: 'assistant',
+          content: msg.text
+        });
+      }
+    });
+    
+    apiMessages.push({ role: 'user', content: currentUserInput });
+
+    const botMessageId = `bot-${Date.now()}`;
+    setChatMessages(prevMessages => [...prevMessages, { id: botMessageId, sender: 'bot', text: "" }]);
+    
+    let accumulatedBotText = "";
+
+    // This is the primary chat logic using OpenAI SDK. The old fetch to /api/chat is removed.
+    try {
+      setStatusMessage('大模型正在思考...');
+      const stream = await openai.chat.completions.create({
+        model: 'deepseek-chat', // TODO: Confirm model name
+        messages: apiMessages,
+        stream: true,
+      });
+
+      for await (const chunk of stream) {
+        const contentDelta = chunk.choices[0]?.delta?.content || "";
+        if (contentDelta) {
+          accumulatedBotText += contentDelta;
+          setChatMessages(prevMessages =>
+            prevMessages.map(msg =>
+              msg.id === botMessageId
+                ? { ...msg, text: accumulatedBotText }
+                : msg
+            )
+          );
         }
-        const data = await response.json();
-        const botMessage = { sender: 'bot', text: data.reply };
-        setChatMessages(prevMessages => [...prevMessages, botMessage]);
-        setStatusMessage('大模型已回复。');
+      }
+      setStatusMessage('大模型已回复。');
+
     } catch (error) {
-        console.error("Error sending message:", error);
-        const errorMessageText = error instanceof Error ? error.message : '与大模型通信失败。';
-        setChatMessages(prevMessages => [...prevMessages, { sender: 'bot', text: `错误: ${errorMessageText}` }]);
-        setStatusMessage('消息发送失败。');
+      console.error("Error sending message or processing stream:", error);
+      const errorResponseMessage = error instanceof Error ? error.message : '与大模型通信失败或处理回复时出错。';
+      setChatMessages(prevMessages =>
+        prevMessages.map(msg =>
+          msg.id === botMessageId
+            ? { ...msg, text: `错误: ${errorResponseMessage}` }
+            : msg
+        )
+      );
+      setStatusMessage('消息发送或处理回复失败。');
+      setErrorMessage(errorResponseMessage);
     }
   };
 
@@ -179,19 +257,27 @@ export default function ChatbotPage() {
         </section>
 
         {/* Analysis Result Display */} 
-        {analysisStatus === 'success' && analysisResultUrl && (
+        {analysisStatus === 'success' && (htmlReportContent || analysisResultUrl) && (
           <section className="flex-grow flex flex-col bg-white shadow-lg rounded-lg overflow-hidden border border-theme-blue-dark/50">
             <h2 className="text-xl font-semibold text-theme-text p-4 bg-theme-blue/10 border-b border-theme-blue-dark/30">分析结果</h2>
-            <iframe 
-              src={analysisResultUrl} 
-              title="分析结果" 
-              className="w-full h-full flex-grow border-none"
-            />
+            {htmlReportContent ? (
+              <iframe 
+                srcDoc={htmlReportContent} 
+                title="分析结果 (内容直显)" 
+                className="w-full h-full flex-grow border-none"
+              />
+            ) : analysisResultUrl ? (
+              <iframe 
+                src={analysisResultUrl} 
+                title="分析结果 (链接加载)" 
+                className="w-full h-full flex-grow border-none"
+              />
+            ) : null}
           </section>
         )}
         
-        {/* Loading/Processing Indicator (could be more sophisticated) */} 
-        {(analysisStatus === 'loading' || analysisStatus === 'processing') && !analysisResultUrl && (
+        {/* Loading/Processing Indicator */} 
+        {(analysisStatus === 'loading' || analysisStatus === 'processing') && !analysisResultUrl && !htmlReportContent && (
             <div className="text-center py-10">
                 <p className="text-theme-text text-xl">请稍候，文档正在分析中...</p>
                 {/* Consider adding a spinner here */}
@@ -207,10 +293,10 @@ export default function ChatbotPage() {
           <section className="mt-auto bg-white/80 backdrop-blur-md p-4 rounded-lg shadow-md border border-theme-blue-dark/30 flex flex-col gap-3">
             <h3 className="text-lg font-semibold text-theme-text mb-2">与我对话：</h3>
             <div ref={chatContainerRef} className="flex-grow max-h-60 overflow-y-auto p-3 space-y-3 bg-theme-blue/5 rounded-md custom-scrollbar">
-              {chatMessages.map((msg, index) => (
-                <div key={index} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
+              {chatMessages.map((msg) => (
+                <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
                   <span className={`inline-block py-2 px-4 rounded-xl shadow max-w-xs sm:max-w-md lg:max-w-lg break-words 
-                                   ${msg.sender === 'user' ? 'bg-theme-blue text-white' : 'bg-gray-200 text-gray-800'}
+                                   ${msg.sender === 'user' ? 'bg-theme-blue text-gray-800' : 'bg-gray-200 text-gray-800'}
                                  `}>
                     {msg.text}
                   </span>
