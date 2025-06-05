@@ -35,6 +35,7 @@ export default function ChatbotPage() {
   const [chatMessages, setChatMessages] = useState<{ id: string, sender: string, text: string }[]>([]);
   const [userInput, setUserInput] = useState('');
   const chatContainerRef = useRef<HTMLDivElement>(null);
+  const [isWebSearchEnabled, setIsWebSearchEnabled] = useState<boolean>(false); // State for web search toggle
 
   const openai = new OpenAI({
     apiKey: DUMMY_DEEPSEEK_API_KEY,
@@ -178,6 +179,13 @@ export default function ChatbotPage() {
     });
     
     apiMessages.push({ role: 'user', content: currentUserInput });
+
+    // TODO: Future - If isWebSearchEnabled is true, potentially modify apiMessages 
+    // or use a different API endpoint/parameters to enable web search functionality for the LLM.
+    // For example, you might add a specific tool_choice or a system instruction:
+    // if (isWebSearchEnabled) {
+    //   apiMessages.unshift({ role: 'system', content: 'Web search is enabled for this query. Please use it if relevant.'});
+    // }
 
     const botMessageId = `bot-${Date.now()}`;
     setChatMessages(prevMessages => [...prevMessages, { id: botMessageId, sender: 'bot', text: "" }]);
@@ -324,6 +332,19 @@ export default function ChatbotPage() {
               >
                 发送
               </button>
+            </div>
+            {/* Web Search Toggle */}
+            <div className="flex items-center mt-3">
+              <input
+                type="checkbox"
+                id="webSearchToggle"
+                checked={isWebSearchEnabled}
+                onChange={(e) => setIsWebSearchEnabled(e.target.checked)}
+                className="w-4 h-4 text-theme-blue-DEFAULT bg-gray-100 border-gray-300 rounded focus:ring-theme-blue-light focus:ring-2 dark:bg-gray-700 dark:border-gray-600 cursor-pointer"
+              />
+              <label htmlFor="webSearchToggle" className="ml-2 text-sm font-medium text-theme-text/90 dark:text-gray-300 cursor-pointer">
+                联网搜索
+              </label>
             </div>
           </section>
         )}
