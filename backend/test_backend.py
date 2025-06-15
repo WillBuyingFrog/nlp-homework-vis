@@ -23,11 +23,14 @@ def test_start_analysis():
     task_id = None
     success = False
     try:
-        response = requests.post(url)
+        # Define the prompt to be sent to the backend
+        payload = {"prompt": "生成5月手卫生培训与专项考核报告"}
+        print(f"Sending POST to {url} with payload: {payload}")
+        response = requests.post(url, json=payload)
         print(f"POST {url} - Status Code: {response.status_code}")
         response_data = response.json()
         print(f"Response JSON: {response_data}")
-        if response.status_code == 202: # Created
+        if response.status_code == 202: # Accepted
             task_id = response_data.get("task_id")
             if task_id:
                 print(f"Analysis started successfully. Task ID: {task_id}")

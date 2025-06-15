@@ -37,6 +37,11 @@ export default function ChatbotPage() {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState<boolean>(false); // State for web search toggle
 
+  // --- File Upload State ---
+  const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
+  const [isDraggingOver, setIsDraggingOver] = useState<boolean>(false);
+  const [reportRequirementsInput, setReportRequirementsInput] = useState('生成5月手卫生培训与专项考核报告');
+
   const openai = new OpenAI({
     apiKey: DUMMY_DEEPSEEK_API_KEY,
     baseURL: DEEPSEEK_ENDPOINT,
@@ -50,11 +55,22 @@ export default function ChatbotPage() {
     setAnalysisResultUrl(null); // Clear previous URL result
     setHtmlReportContent(null); // Clear previous HTML content result
 
-    console.log("Starting analysis...");
+    if (!reportRequirementsInput.trim()) {
+      setAnalysisStatus('idle'); // or 'error'
+      setErrorMessage('报告生成需求不能为空。');
+      setStatusMessage('请输入报告生成需求后重试。');
+      return;
+    }
+    
+    console.log("Starting analysis with prompt:", reportRequirementsInput);
 
     try {
-      const response = await fetch(`${BACKEND_URL}/api/start-dummy-analysis`, {
+      const response = await fetch(`${BACKEND_URL}/api/start-analysis`, {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ prompt: reportRequirementsInput }),
       });
       if (!response.ok) {
         const errorData = await response.json();
@@ -126,7 +142,7 @@ export default function ChatbotPage() {
           setTaskId(null);
           clearInterval(intervalId);
         }
-      }, 3000); // Poll every 3 seconds
+      }, 10000); // Poll every 10 seconds
 
       return () => clearInterval(intervalId);
     }
@@ -137,6 +153,41 @@ export default function ChatbotPage() {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [chatMessages]);
+
+  // --- File Upload Handlers ---
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files) {
+      setUploadedFiles(prevFiles => [...prevFiles, ...Array.from(event.target.files || [])]);
+    }
+  };
+
+  const handleDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDraggingOver(true);
+  };
+
+  const handleDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDraggingOver(false);
+  };
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDraggingOver(false);
+    if (event.dataTransfer.files && event.dataTransfer.files.length > 0) {
+      setUploadedFiles(prevFiles => [...prevFiles, ...Array.from(event.dataTransfer.files)]);
+      // Optionally, reset the dataTransfer to prevent issues if the user drops again
+      event.dataTransfer.clearData();
+    }
+  };
+
+  const removeFile = (fileName: string) => {
+    setUploadedFiles(prevFiles => prevFiles.filter(file => file.name !== fileName));
+  };
+  // --- End File Upload Handlers ---
 
   const handleSendMessage = async () => {
     if (!userInput.trim()) return;
@@ -232,7 +283,7 @@ export default function ChatbotPage() {
   };
 
   return (
-    <div className="flex flex-col min-h-screen bg-theme-bg-light p-4 sm:p-6 lg:p-8 font-sans">
+    <div className="flex flex-col min-h-screen bg-theme-bg-light p-4 sm:p-6 lg:p-8 font-sans max-w-screen-xl mx-auto">
       <header className="mb-6 pb-4 border-b border-theme-blue-dark">
         <h1 className="text-3xl sm:text-4xl font-bold text-theme-text mb-2 ">文档分析与问答机器人</h1>
         <p className={`text-sm ${analysisStatus === 'error' ? 'text-red-600' : 'text-theme-text/80'}`}>
@@ -247,20 +298,99 @@ export default function ChatbotPage() {
         {/* Analysis Control and Display */} 
         <section>
           {analysisStatus !== 'success' && (
+            <>
+              {/* Report Requirements Input */}
+              <div className="mb-4">
+                <label htmlFor="reportRequirements" className="block text-sm font-medium text-theme-text mb-1">
+                  报告生成需求：
+                </label>
+                <textarea
+                  id="reportRequirements"
+                  rows={3}
+                  className="w-full p-2 border border-theme-blue-dark/50 rounded-md focus:ring-2 focus:ring-theme-blue-DEFAULT focus:border-transparent outline-none"
+                  placeholder="例如：总结文档的主要观点，提取关键数据..."
+                  value={reportRequirementsInput}
+                  onChange={(e) => setReportRequirementsInput(e.target.value)}
+                />
+              </div>
+
+              {/* File Upload Area */}
+              <div className="mb-4">
+                <label htmlFor="fileUpload" className="block text-sm font-medium text-theme-text mb-1">
+                  上传文档：
+                </label>
+                <div 
+                  id="fileUpload"
+                  onDragOver={handleDragOver}
+                  onDragLeave={handleDragLeave}
+                  onDrop={handleDrop}
+                  className={`mt-1 flex justify-center px-6 pt-5 pb-6 border-2 ${isDraggingOver ? 'border-theme-blue-DEFAULT' : 'border-gray-300'} border-dashed rounded-md transition-colors`}
+                >
+                  <div className="space-y-1 text-center">
+                    <svg
+                      className="mx-auto h-12 w-12 text-gray-400"
+                      stroke="currentColor"
+                      fill="none"
+                      viewBox="0 0 48 48"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    <div className="flex text-sm text-gray-600">
+                      <label
+                        htmlFor="file-upload-input" // Changed from fileUpload to avoid conflict with div id
+                        className="relative cursor-pointer bg-white rounded-md font-medium text-theme-blue-DEFAULT hover:text-theme-blue-light focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-theme-blue-dark"
+                      >
+                        <span>上传文件</span>
+                        <input id="file-upload-input" name="file-upload-input" type="file" className="sr-only" multiple onChange={handleFileSelect} />
+                      </label>
+                      <p className="pl-1">或拖拽文件到此处</p>
+                    </div>
+                    <p className="text-xs text-gray-500">支持 PDF, DOCX, TXT 等格式</p>
+                  </div>
+                </div>
+                {/* Display Uploaded Files */} 
+                {uploadedFiles.length > 0 && (
+                  <div className="mt-3">
+                    <h4 className="text-sm font-medium text-theme-text mb-1">已选择文件：</h4>
+                    <ul className="list-disc list-inside pl-1 space-y-1">
+                      {uploadedFiles.map(file => (
+                        <li key={file.name} className="text-sm text-gray-700 flex justify-between items-center">
+                          <span>{file.name} ({ (file.size / 1024).toFixed(2) } KB)</span>
+                          <button 
+                            type="button"
+                            onClick={() => removeFile(file.name)}
+                            className="ml-2 text-red-500 hover:text-red-700 text-xs"
+                          >
+                            移除
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+              
               <button type='button'
                 onClick={(e) => {
                   console.log('[[DEBUG]] Button onClick handler fired!');
                   handleStartAnalysis();
                 }}
-                disabled={analysisStatus === 'loading' || analysisStatus === 'processing'}
+                disabled={analysisStatus === 'loading' || analysisStatus === 'processing' || !reportRequirementsInput.trim()}
                 className={`px-6 py-3 text-lg font-semibold rounded-md shadow-md transition-colors duration-150
-                            ${(analysisStatus === 'loading' || analysisStatus === 'processing') 
+                            ${(analysisStatus === 'loading' || analysisStatus === 'processing' || !reportRequirementsInput.trim()) 
                               ? 'bg-gray-400 cursor-not-allowed' 
                               : 'bg-blue-500 text-white hover:bg-theme-blue-light focus:ring-2 focus:ring-theme-blue-dark focus:ring-opacity-50'}
                           `}
               >
                 {analysisStatus === 'loading' || analysisStatus === 'processing' ? '正在分析中...' : '开始分析文档'}
               </button>
+            </>
           )}
         </section>
 

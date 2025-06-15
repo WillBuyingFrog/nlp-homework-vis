@@ -20,7 +20,6 @@ NLP_OUTPUT_DIR = os.path.join(NLP_HOMEWORK_DIR, "output")
 # Let's stick to a primary guess and then search.
 ASSUMED_VISUALIZATION_HTML_FILENAME = "visualization.html"
 DUMMY_HTML_FILENAME = "dummy_visualization.html" # For the dummy task
-USER_STATIC_HTML_SOURCE = os.path.join(NLP_HOMEWORK_DIR, "mid_output_word.html") # Source of user's static HTML
 
 # --- Flask App Setup ---
 app = Flask(__name__)
@@ -34,7 +33,7 @@ logging.basicConfig(level=logging.INFO)
 tasks = {} 
 
 # --- Helper Function for Analysis ---
-def run_analysis_scripts_for_task(task_id):
+def run_analysis_scripts_for_task(task_id, user_prompt):
     try:
         current_task = tasks[task_id]
         current_task["status"] = "processing"
@@ -49,22 +48,41 @@ def run_analysis_scripts_for_task(task_id):
         script_cwd = NLP_HOMEWORK_DIR
         python_executable = "python" # Or specify full path to a venv python if necessary
 
-        # Step 1: generate_raw_json.py
+        # Define consistent intermediate filenames, using task_id to prevent race conditions
+        raw_output_filename = "raw_output.json"
+        conclusion_filename = "conclusion.json"
+        mid_output_filename = "mid_output.json"
+        
+        # Step 1: generate_raw_output_json.py with dynamic prompt and output
         current_task["message"] = "Step 1/3: Generating raw JSON..."
-        app.logger.info(f"Task {task_id}: Running generate_raw_output_json.py")
+        app.logger.info(f"Task {task_id}: Running generate_raw_output_json.py with prompt: '{user_prompt}'")
         script1_path = os.path.join(NLP_HOMEWORK_DIR, "generate_raw_output_json.py")
-        process1 = subprocess.run([python_executable, script1_path], cwd=script_cwd, capture_output=True, text=True, check=False, encoding='utf-8')
+        cmd1 = [
+            python_executable, 
+            script1_path,
+            "--prompt", user_prompt,
+            "--output", raw_output_filename,
+            "--conclusion_output", conclusion_filename
+        ]
+        process1 = subprocess.run(cmd1, cwd=script_cwd, capture_output=True, text=True, check=False, encoding='utf-8')
         if process1.returncode != 0:
             error_msg = f"generate_raw_output_json.py failed: STDOUT: {process1.stdout} STDERR: {process1.stderr}"
             app.logger.error(f"Task {task_id}: {error_msg}")
             raise Exception(error_msg)
         app.logger.info(f"Task {task_id}: generate_raw_output_json.py completed. STDOUT: {process1.stdout}")
 
-        # Step 2: generate_mid_fromraw.py
+        # Step 2: generate_mid_fromraw.py, pointing to the output of Step 1
         current_task["message"] = "Step 2/3: Generating intermediate JSON..."
         app.logger.info(f"Task {task_id}: Running generate_mid_fromraw.py")
         script2_path = os.path.join(NLP_HOMEWORK_DIR, "generate_mid_fromraw.py")
-        process2 = subprocess.run([python_executable, script2_path], cwd=script_cwd, capture_output=True, text=True, check=False, encoding='utf-8')
+        cmd2 = [
+            python_executable,
+            script2_path,
+            "--raw_input", raw_output_filename,
+            "--conclusion_input", conclusion_filename,
+            "--output", mid_output_filename 
+        ]
+        process2 = subprocess.run(cmd2, cwd=script_cwd, capture_output=True, text=True, check=False, encoding='utf-8')
         if process2.returncode != 0:
             error_msg = f"generate_mid_fromraw.py failed: STDOUT: {process2.stdout} STDERR: {process2.stderr}"
             app.logger.error(f"Task {task_id}: {error_msg}")
@@ -75,7 +93,18 @@ def run_analysis_scripts_for_task(task_id):
         current_task["message"] = "Step 3/3: Generating visualization..."
         app.logger.info(f"Task {task_id}: Running visualization.py")
         script3_path = os.path.join(NLP_HOMEWORK_DIR, "visualization.py")
-        process3 = subprocess.run([python_executable, script3_path], cwd=script_cwd, capture_output=True, text=True, check=False, encoding='utf-8')
+        
+        # The final report will be placed in the designated output directory
+        final_html_filename = ASSUMED_VISUALIZATION_HTML_FILENAME # e.g., "visualization.html"
+        final_html_path = os.path.join(NLP_OUTPUT_DIR, final_html_filename)
+
+        cmd3 = [
+            python_executable,
+            script3_path,
+            "--input", mid_output_filename,
+            "--output", final_html_path
+        ]
+        process3 = subprocess.run(cmd3, cwd=script_cwd, capture_output=True, text=True, check=False, encoding='utf-8')
         if process3.returncode != 0:
             error_msg = f"visualization.py failed: STDOUT: {process3.stdout} STDERR: {process3.stderr}"
             app.logger.error(f"Task {task_id}: {error_msg}")
@@ -83,36 +112,18 @@ def run_analysis_scripts_for_task(task_id):
         app.logger.info(f"Task {task_id}: visualization.py completed. STDOUT: {process3.stdout}")
         
         # Discover the HTML file produced by visualization.py
-        # The README for visualization.py says "输出：html可视化文件" but no specific name.
-        # It's likely to be in NLP_OUTPUT_DIR.
-        found_html_filename = None
-        assumed_path = os.path.join(NLP_OUTPUT_DIR, ASSUMED_VISUALIZATION_HTML_FILENAME)
-        if os.path.exists(assumed_path):
-            found_html_filename = ASSUMED_VISUALIZATION_HTML_FILENAME
-            app.logger.info(f"Task {task_id}: Found expected HTML file: {found_html_filename}")
+        # Since we explicitly defined the output path, we can directly check for it.
+        if os.path.exists(final_html_path):
+            app.logger.info(f"Task {task_id}: Found expected HTML file: {final_html_filename}")
+            current_task["result_filename"] = final_html_filename
         else:
-            app.logger.info(f"Task {task_id}: Assumed HTML file '{ASSUMED_VISUALIZATION_HTML_FILENAME}' not found. Searching in {NLP_OUTPUT_DIR}...")
-            html_files = [f for f in os.listdir(NLP_OUTPUT_DIR) if f.lower().endswith('.html')]
-            if html_files:
-                # Prefer files that might be named 'index' or 'report' or contain 'visual'
-                preferred_names = ['index.html', 'report.html', 'visualization.html', 'visualisation.html']
-                for pref_name in preferred_names:
-                    if pref_name in html_files:
-                        found_html_filename = pref_name
-                        break
-                if not found_html_filename:
-                    html_files.sort(key=lambda f: os.path.getmtime(os.path.join(NLP_OUTPUT_DIR, f)), reverse=True)
-                    found_html_filename = html_files[0] # Fallback to the most recently modified HTML file
-                app.logger.info(f"Task {task_id}: Found HTML file by searching: {found_html_filename}")
-            else:
-                error_msg = f"No HTML visualization file found in {NLP_OUTPUT_DIR} after scripts execution."
-                app.logger.error(f"Task {task_id}: {error_msg}")
-                raise Exception(error_msg)
+            error_msg = f"No HTML visualization file found at the expected path: {final_html_path}"
+            app.logger.error(f"Task {task_id}: {error_msg}")
+            raise Exception(error_msg)
         
-        current_task["result_filename"] = found_html_filename
         current_task["status"] = "completed"
         current_task["message"] = "Analysis completed successfully."
-        app.logger.info(f"Task {task_id}: Analysis completed. Result file: {found_html_filename}")
+        app.logger.info(f"Task {task_id}: Analysis completed. Result file: {final_html_filename}")
 
     except Exception as e:
         app.logger.error(f"Error during analysis for task {task_id}: {str(e)}", exc_info=True)
@@ -124,6 +135,12 @@ def run_analysis_scripts_for_task(task_id):
 # --- API Endpoints ---
 @app.route('/api/start-analysis', methods=['POST'])
 def start_analysis_endpoint():
+    # Expect a JSON body with a 'prompt'
+    data = request.get_json()
+    if not data or 'prompt' not in data:
+        return jsonify({"error": "Missing 'prompt' in request body"}), 400
+    user_prompt = data['prompt']
+
     task_id = str(uuid.uuid4())
     tasks[task_id] = {
         "status": "pending", 
@@ -131,9 +148,9 @@ def start_analysis_endpoint():
         "error": None, 
         "message": "Task created, awaiting execution."
     }
-    app.logger.info(f"Created task {task_id}")
+    app.logger.info(f"Created task {task_id} with prompt: '{user_prompt}'")
     
-    thread = threading.Thread(target=run_analysis_scripts_for_task, args=(task_id,))
+    thread = threading.Thread(target=run_analysis_scripts_for_task, args=(task_id, user_prompt))
     thread.daemon = True # Allow main program to exit even if threads are running
     thread.start()
     
